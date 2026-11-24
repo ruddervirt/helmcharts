@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+  # update.yaml starts this workflow on its pull request branches. A pull request
+  # that GITHUB_TOKEN opens does not start pull_request workflows, but a
+  # workflow_dispatch from GITHUB_TOKEN does. The check runs attach to the branch
+  # head commit, so they show on the pull request and count for branch protection.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Helm version of the k3s klipper-helm image that helm-controller runs.
+  HELM_VERSION: v4.3.1
+
+jobs:
+  test:
+    name: Unit, diff, and lint
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: gofmt and go vet
+        run: |
+          unformatted=$(gofmt -l .)
+          if [[ -n "$unformatted" ]]; then
+            echo "::error::gofmt needed: $unformatted"
+            exit 1
+          fi
+          go vet ./...
+      - name: go test (generator, merge behavior, diff with upstream, helm lint)
+        run: go test ./...
+      - name: Generated charts match the generator output
+        run: |
+          go run ./cmd/chartgen regenerate
+          if [[ -n "$(git status --porcelain charts)" ]]; then
+            git status --porcelain charts
+            git diff --stat charts
+            echo "::error::charts/ is not the generator output. Run 'go run ./cmd/chartgen regenerate' and commit, or fix the generator."
+            exit 1
+          fi
+      - name: helm lint and helm template
+        run: |
+          for dir in charts/*/*/; do
+            echo "::group::$dir"
+            helm lint --strict "$dir"
+            helm template test "$dir" --namespace test-ns --include-crds >/dev/null
+            echo "::endgroup::"
+          done
+
+  e2e:
+    name: End-to-end (kind, Helm ${{ matrix.helm }})
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        # v4.3.1: what k3s helm-controller runs. v3.19.2: the last Helm 3 line.
+        helm: [v4.3.1, v3.19.2]
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ matrix.helm }}
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          install_only: true
+      - name: Adopt, upgrade, and uninstall
+        run: test/e2e/run.sh

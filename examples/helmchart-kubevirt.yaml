@@ -1,0 +1,23 @@
+# k3s HelmChart for KubeVirt, as ruddervirt-setup uses it.
+# helm-controller installs the chart as release "kubevirt" in namespace "kubevirt".
+# With takeOwnership: true, Helm adopts a KubeVirt install that "kubectl apply" made.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: kubevirt
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/kubevirt
+  # Use the version that the cluster runs now (status.observedKubeVirtVersion without "v"),
+  # so that the adoption changes no pod. Change it later to upgrade.
+  version: 1.9.1
+  targetNamespace: kubevirt
+  createNamespace: true
+  takeOwnership: true
+  failurePolicy: abort
+  # Optional. Helm owns only the custom resource fields that you set here.
+  # Do not set spec.configuration.developerConfiguration.featureGates: Aileron owns it.
+  valuesContent: |-
+    kubevirt:
+      spec:
+        uninstallStrategy: BlockUninstallIfWorkloadsExist

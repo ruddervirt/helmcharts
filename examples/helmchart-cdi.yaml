@@ -1,0 +1,21 @@
+# k3s HelmChart for CDI, as ruddervirt-setup uses it.
+# helm-controller installs the chart as release "cdi" in namespace "cdi".
+# With takeOwnership: true, Helm adopts a CDI install that "kubectl apply" made.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: cdi
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/cdi
+  # Use the version that the cluster runs now (status.observedVersion without "v"),
+  # so that the adoption changes no pod. Change it later to upgrade.
+  version: 1.65.0
+  targetNamespace: cdi
+  createNamespace: true
+  takeOwnership: true
+  failurePolicy: abort
+  valuesContent: |-
+    cdi:
+      spec:
+        uninstallStrategy: BlockUninstallIfWorkloadsExist
