@@ -10,6 +10,7 @@ A generator (`cmd/chartgen`) writes every file under `charts/`. Do not edit thos
 | --- | --- | --- | --- |
 | `kubevirt` | [kubevirt/kubevirt](https://github.com/kubevirt/kubevirt) | `oci://ghcr.io/ruddervirt/charts/kubevirt` | [docs/kubevirt-cdi.md](docs/kubevirt-cdi.md) |
 | `cdi` | [kubevirt/containerized-data-importer](https://github.com/kubevirt/containerized-data-importer) | `oci://ghcr.io/ruddervirt/charts/cdi` | [docs/kubevirt-cdi.md](docs/kubevirt-cdi.md) |
+| `multus-crds` | [k8snetworkplumbingwg/multus-cni](https://github.com/k8snetworkplumbingwg/multus-cni) | `oci://ghcr.io/ruddervirt/charts/multus-crds` | [docs/multus-crds.md](docs/multus-crds.md) |
 
 The documentation of each chart covers its values, install, adoption, upgrade, and uninstall behavior.
 
@@ -100,21 +101,32 @@ If the upstream layout changes, the generator stops with an error. Examples:
 - an image is not in the upstream registry, or has a different tag,
 - a version env var or an image env var is missing,
 - the tag or the upstream namespace is still in a value after templating,
-- the custom resource file has an unexpected kind, name, or metadata.
+- the custom resource file has an unexpected kind, name, or metadata,
+- a CRD that a CRD-only project lists is missing,
+- the source file of a CRD-only project has a CRD that the project does not list.
 
 ## Add a new chart
 
-The generator supports projects that publish an operator manifest and a custom resource file as release assets. The operator manifest must contain one Namespace, one static CRD, and one operator Deployment. KubeVirt and CDI have this shape. A project with a different shape needs a change to `internal/chartgen` first.
+The generator supports two project shapes. The `Shape` field of a project in `internal/upstream/upstream.go` selects one:
 
-To add a project with this shape:
+| Shape | Upstream source | Chart content | Examples |
+| --- | --- | --- | --- |
+| `ShapeOperator` | An operator manifest and a custom resource file, both release assets. The manifest has one Namespace, one static CRD, and one operator Deployment. | The operator resources, the custom resource, the static CRD in `crds/`, and the namespace and CRD hooks. | `kubevirt`, `cdi` |
+| `ShapeCRDs` | One repository file at the release tag. | Only the CRDs that the project lists, in `templates/`. All other documents of the file are dropped. | `multus-crds` |
 
-1. Add a `Project` entry to `Projects` in `internal/upstream/upstream.go`. Set the release file names, the namespace, the CRD, the custom resource, and the Deployment. Also set the image registry, the env vars, the required objects, and `MinTag`.
-2. Add the name to `Names()` in the same file. The tests, `regenerate`, and `missing` use this list.
-3. Generate the first chart: `go run ./cmd/chartgen generate --project <name> --tag <tag>`.
-4. Add `examples/helmchart-<name>.yaml`. `test/diff` requires one example for each project.
-5. Write `docs/<name>.md` and add a row to the [Charts](#charts) table.
-6. Extend `test/e2e/run.sh`, or add an end-to-end test for the new chart. The current script installs only KubeVirt and CDI.
-7. Run `go test ./...` and the end-to-end test.
+A project with a different shape needs a change to `internal/chartgen` first.
+
+To add a project:
+
+1. Add a `Project` entry to `Projects` in `internal/upstream/upstream.go`. Set `Name`, `Repo`, `Shape`, and `MinTag`.
+2. For `ShapeOperator`, set the release file names, the namespace, the CRD, the custom resource, and the Deployment. Also set the image registry, the env vars, and the required objects.
+3. For `ShapeCRDs`, set `SourceFile` (the repository path) and `CRDNames`.
+4. Add the name to `Names()` in the same file. The tests, `regenerate`, and `missing` use this list.
+5. Generate the first chart: `go run ./cmd/chartgen generate --project <name> --tag <tag>`.
+6. Add `examples/helmchart-<name>.yaml`. `test/diff` requires one example for each project.
+7. Write `docs/<name>.md` and add a row to the [Charts](#charts) table.
+8. Add an end-to-end case for the new chart to `test/e2e/run.sh`.
+9. Run `go test ./...` and the end-to-end test.
 
 After the merge, the update workflow opens pull requests for new releases of the project, and the publish workflow pushes its charts. After the first publish, set the new package on ghcr.io to public.
 
@@ -126,7 +138,7 @@ All tests run in CI on every pull request and before every publish.
 | --- | --- | --- |
 | Generator | `go test ./internal/...` | Generates charts from small fixtures. Makes sure that layout changes stop the generator. |
 | Merge behavior | `go test ./test/merge` | Applies the Helm patch functions to a custom resource with fields that the chart does not render. |
-| Diff with upstream | `go test ./test/diff` | Runs `helm lint` and `helm template`. Compares each rendered resource with the upstream manifest. The allowed differences are the removed Namespace, the `keep` annotation, the hooks, and the custom resource. The custom resource must match the upstream defaults. |
+| Diff with upstream | `go test ./test/diff` | Runs `helm lint` and `helm template`. Compares each rendered resource with the upstream manifest. For an operator chart, the allowed differences are the removed Namespace, the `keep` annotation, the hooks, and the custom resource. The custom resource must match the upstream defaults. For a CRD-only chart, the only allowed difference is the `keep` annotation. |
 | Regenerate | `go run ./cmd/chartgen regenerate && git diff --exit-code` | Makes sure that `charts/` is the generator output. |
 | End-to-end | `test/e2e/run.sh` | Adopts an install that `kubectl apply` made, upgrades it, and uninstalls it on a kind cluster. See the documentation of each chart. |
 

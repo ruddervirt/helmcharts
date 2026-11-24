@@ -1,8 +1,10 @@
 // Package diff compares the rendered charts with the upstream release manifests.
 //
 // For every chart under charts/, it renders the chart with default values and makes
-// sure that each resource equals the upstream resource. The only allowed differences
-// are the removed Namespace, Helm annotations, the hooks, and the custom resource.
+// sure that each resource equals the upstream resource. For an operator chart, the
+// only allowed differences are the removed Namespace, Helm annotations, the hooks,
+// and the custom resource. For a CRD-only chart, the only allowed difference is the
+// keep annotation.
 package diff
 
 import (
@@ -80,6 +82,9 @@ func helm(t *testing.T, args ...string) []byte {
 
 func render(t *testing.T, c chart, namespace string, extra ...string) []manifest.Object {
 	t.Helper()
+	if namespace == "" {
+		namespace = "kube-system" // a CRD-only project has no upstream namespace
+	}
 	args := append([]string{"template", c.project.Name, c.dir, "--namespace", namespace, "--include-crds"}, extra...)
 	objs, err := manifest.Split(helm(t, args...))
 	if err != nil {
@@ -107,6 +112,10 @@ func TestLint(t *testing.T) {
 
 func TestMatchesUpstream(t *testing.T) {
 	for _, c := range charts(t) {
+		if c.project.Shape == upstream.ShapeCRDs {
+			t.Run(c.dir, func(t *testing.T) { matchCRDs(t, c) })
+			continue
+		}
 		t.Run(c.dir, func(t *testing.T) {
 			up, err := manifest.Split(fetch(t, c, c.project.OperatorFile))
 			if err != nil {
@@ -172,6 +181,67 @@ func TestMatchesUpstream(t *testing.T) {
 	}
 }
 
+// matchCRDs makes sure that a CRD-only chart renders exactly the listed upstream
+// CRDs, each with the keep annotation and otherwise equal to the upstream document.
+func matchCRDs(t *testing.T, c chart) {
+	src, err := c.project.FetchSource(c.tag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := manifest.Split(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]manifest.Object{}
+	listed := map[string]bool{}
+	for _, n := range c.project.CRDNames {
+		listed[n] = true
+	}
+	for _, o := range up {
+		if manifest.Kind(o) == "CustomResourceDefinition" && listed[manifest.Name(o)] {
+			want[manifest.Name(o)] = o
+		}
+	}
+	if len(want) != len(listed) {
+		t.Fatalf("upstream %s has %d of the %d listed CRDs", c.project.SourceFile, len(want), len(listed))
+	}
+	got := map[string]bool{}
+	for _, o := range render(t, c, "chart-test-ns") {
+		key := manifest.Key(o)
+		if manifest.IsHook(o) {
+			t.Errorf("%s: a CRD-only chart has no hooks", key)
+			continue
+		}
+		if manifest.Kind(o) != "CustomResourceDefinition" {
+			t.Errorf("%s: a CRD-only chart renders only CRDs", key)
+			continue
+		}
+		u, ok := want[manifest.Name(o)]
+		if !ok {
+			t.Errorf("%s: not listed in CRDNames", key)
+			continue
+		}
+		got[manifest.Name(o)] = true
+		if v := manifest.Annotations(o)[chartgen.KeepAnnotation]; v != "keep" {
+			t.Errorf("%s: annotation %s = %v, want keep", key, chartgen.KeepAnnotation, v)
+		}
+		manifest.RemoveAnnotations(o, func(k string) bool { return k == chartgen.KeepAnnotation })
+		if d := manifest.Diff(o, u); len(d) > 0 {
+			t.Errorf("%s differs from upstream:\n  %s", key, strings.Join(d, "\n  "))
+		}
+	}
+	for n := range want {
+		if !got[n] {
+			t.Errorf("CRD %s: in upstream but not rendered", n)
+		}
+	}
+	// "helm template --include-crds" renders files in crds/ too. A CRD-only chart has
+	// none, because Helm never upgrades files in crds/.
+	if _, err := os.Stat(filepath.Join(c.dir, "crds")); err == nil {
+		t.Errorf("%s has a crds/ directory", c.dir)
+	}
+}
+
 // TestOtherNamespace makes sure that no rendered resource keeps the upstream namespace.
 func TestOtherNamespace(t *testing.T) {
 	const ns = "chart-test-ns"
@@ -217,6 +287,9 @@ func TestNoDeleteHooks(t *testing.T) {
 // unset custom resource fields do not render.
 func TestValuesOverride(t *testing.T) {
 	for _, c := range charts(t) {
+		if c.project.Shape != upstream.ShapeOperator {
+			continue // no images and no custom resource
+		}
 		t.Run(c.dir, func(t *testing.T) {
 			objs := render(t, c, c.project.Namespace,
 				"--set", "image.registry=registry.example.com/kv",

@@ -1,0 +1,19 @@
+# k3s HelmChart for the Multus NetworkAttachmentDefinition CRD, as ruddervirt-setup uses it.
+# helm-controller installs the chart as release "multus-crds" in namespace "kube-system".
+# The CRD is cluster scoped, so the release namespace has no effect on it.
+# With takeOwnership: true, Helm adopts a CRD that "kubectl apply" made.
+# Install this chart before rke2-multus, and before anything creates a
+# NetworkAttachmentDefinition.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: multus-crds
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/multus-crds
+  # The multus-cni version of rke2-multus: v4.3.017 has appVersion 4.3.0, and
+  # v4.3.118 has appVersion 4.3.1. The CRD is the same in 4.3.0, 4.3.1, and 4.3.2.
+  version: 4.3.1
+  targetNamespace: kube-system
+  takeOwnership: true
+  failurePolicy: abort

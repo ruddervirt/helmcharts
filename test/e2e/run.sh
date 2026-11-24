@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # End-to-end test on kind.
 #
+# Multus CRDs:
+# 1. Apply the upstream NetworkAttachmentDefinition CRD of release N with
+#    "kubectl apply" (as ruddervirt-setup did) and create a NetworkAttachmentDefinition.
+# 2. Adopt the CRD with "helm install --take-ownership" at N. Make sure that the CRD
+#    spec did not change and the NetworkAttachmentDefinition still exists.
+# 3. Upgrade with Helm to N+1 (the chart under test).
+# 4. Run "helm uninstall". Make sure that the CRD and the NetworkAttachmentDefinition stay.
+#
+# KubeVirt and CDI:
 # 1. Install upstream KubeVirt and CDI at version N with "kubectl apply" (as ruddervirt-setup does).
 # 2. Patch feature gates into the KubeVirt CR (as Aileron does).
 # 3. Adopt both installs with "helm install --take-ownership" at version N.
@@ -15,7 +24,8 @@
 # N is the stable upstream release before the chart under test.
 #
 # Environment:
-#   KUBEVIRT_CHART, CDI_CHART  chart directories under test (default: newest in charts/)
+#   KUBEVIRT_CHART, CDI_CHART, MULTUS_CRDS_CHART
+#                              chart directories under test (default: newest in charts/)
 #   KIND_CLUSTER               kind cluster name (default: chart-e2e)
 #   E2E_REUSE_CLUSTER=1        use an existing cluster with that name
 #   E2E_KEEP_CLUSTER=1         do not delete the cluster at the end
@@ -70,6 +80,10 @@ KV_PREV=$("${CHARTGEN[@]}" previous --project kubevirt --tag "$KV_TAG")
 CDI_PREV=$("${CHARTGEN[@]}" previous --project cdi --tag "$CDI_TAG")
 echo "KubeVirt: $KV_PREV -> $KV_TAG ($KUBEVIRT_CHART)"
 echo "CDI:      $CDI_PREV -> $CDI_TAG ($CDI_CHART)"
+MULTUS_CRDS_CHART=${MULTUS_CRDS_CHART:-$("${CHARTGEN[@]}" latest --project multus-crds)}
+MULTUS_TAG=$(appversion "$MULTUS_CRDS_CHART")
+MULTUS_PREV=$("${CHARTGEN[@]}" previous --project multus-crds --tag "$MULTUS_TAG")
+echo "Multus:   $MULTUS_PREV -> $MULTUS_TAG ($MULTUS_CRDS_CHART)"
 
 # Use the same Helm flags as k3s helm-controller with takeOwnership: true. It passes
 # --take-ownership to install and upgrade. With Helm v4, it also passes
@@ -85,6 +99,7 @@ ADOPT_VALUES=()
 log "Generate the charts for N"
 KV_PREV_CHART=$("${CHARTGEN[@]}" generate --project kubevirt --tag "$KV_PREV" --charts-dir "$WORK/charts")
 CDI_PREV_CHART=$("${CHARTGEN[@]}" generate --project cdi --tag "$CDI_PREV" --charts-dir "$WORK/charts")
+MULTUS_PREV_CHART=$("${CHARTGEN[@]}" generate --project multus-crds --tag "$MULTUS_PREV" --charts-dir "$WORK/charts")
 
 if [[ "${E2E_REUSE_CLUSTER:-}" != 1 ]]; then
   log "Create kind cluster $CLUSTER"
@@ -94,6 +109,70 @@ else
 fi
 
 download() { curl -fsSL -o "$WORK/$3" "https://github.com/$1/releases/download/$2/$3"; }
+
+NAD_CRD=network-attachment-definitions.k8s.cni.cncf.io
+log "Multus CRDs: apply the upstream CRD of $MULTUS_PREV with kubectl apply"
+curl -fsSL -o "$WORK/multus-daemonset.yml" \
+  "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/$MULTUS_PREV/deployments/multus-daemonset.yml"
+# Keep only the CRD documents, as text, exactly as upstream wrote them.
+awk '
+  function flush() { if (doc ~ /\nkind: CustomResourceDefinition\n/) printf "---%s\n", doc; doc = "" }
+  /^---/ { flush(); next }
+  { doc = doc "\n" $0 }
+  END { flush() }
+' "$WORK/multus-daemonset.yml" >"$WORK/multus-crds.yaml"
+[[ $(grep -c '^kind: CustomResourceDefinition' "$WORK/multus-crds.yaml") == 1 ]] \
+  || fail "expected one CRD in the upstream multus-daemonset.yml"
+$KUBECTL apply -f "$WORK/multus-crds.yaml"
+$KUBECTL wait --for=condition=Established "crd/$NAD_CRD" --timeout=120s
+cat <<'NAD' | $KUBECTL apply -f -
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: egress-external
+  namespace: default
+spec:
+  config: '{"cniVersion":"0.3.1","type":"bridge","bridge":"br-e2e"}'
+NAD
+
+# crd_state prints the identity, generation, and spec of the CRD, and the identity of
+# the NetworkAttachmentDefinition. A CRD spec change increments the generation.
+crd_state() {
+  $KUBECTL get crd "$NAD_CRD" -o jsonpath='crd uid={.metadata.uid} generation={.metadata.generation}{"\n"}'
+  $KUBECTL get crd "$NAD_CRD" -o jsonpath='{.spec}' | sha256sum | sed 's/^/crd spec sha256=/; s/ *-$//'
+  $KUBECTL -n default get network-attachment-definitions egress-external \
+    -o jsonpath='nad uid={.metadata.uid} config={.spec.config}{"\n"}'
+}
+crd_state >"$WORK/multus-before"
+cat "$WORK/multus-before"
+
+log "Multus CRDs: adopt with helm install --take-ownership at $MULTUS_PREV"
+$HELM install multus-crds "$MULTUS_PREV_CHART" -n kube-system "${HELM_FLAGS[@]}" --wait --timeout 5m
+crd_state >"$WORK/multus-after-adopt"
+diff -u "$WORK/multus-before" "$WORK/multus-after-adopt" || fail "adoption changed the CRD or the NetworkAttachmentDefinition"
+[[ $($KUBECTL get crd "$NAD_CRD" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}') == Helm ]] \
+  || fail "CRD $NAD_CRD is not managed by Helm"
+[[ $($KUBECTL get crd "$NAD_CRD" -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}') == keep ]] \
+  || fail "CRD $NAD_CRD has no keep annotation"
+echo "adoption changed neither the CRD spec nor the NetworkAttachmentDefinition"
+
+log "Multus CRDs: upgrade with Helm to $MULTUS_TAG"
+$HELM upgrade multus-crds "$MULTUS_CRDS_CHART" -n kube-system "${HELM_FLAGS[@]}" --wait --timeout 5m
+crd_state >"$WORK/multus-after-upgrade"
+# The CRD of N+1 can differ from N, so compare only the identities.
+diff -u <(grep -v '^crd spec' "$WORK/multus-before" | sed 's/ generation=.*//') \
+  <(grep -v '^crd spec' "$WORK/multus-after-upgrade" | sed 's/ generation=.*//') \
+  || fail "the upgrade replaced the CRD or the NetworkAttachmentDefinition"
+[[ $($HELM get manifest multus-crds -n kube-system | grep -c '^kind: CustomResourceDefinition') == 1 ]] \
+  || fail "release multus-crds does not contain the CRD"
+
+log "Multus CRDs: helm uninstall"
+$HELM uninstall multus-crds -n kube-system --wait
+sleep 5
+crd_state >"$WORK/multus-after-uninstall"
+diff -u "$WORK/multus-after-upgrade" "$WORK/multus-after-uninstall" \
+  || fail "helm uninstall changed the CRD or the NetworkAttachmentDefinition"
+echo "helm uninstall left the CRD and the NetworkAttachmentDefinition in place"
 
 log "Install upstream KubeVirt $KV_PREV and CDI $CDI_PREV with kubectl apply"
 download kubevirt/kubevirt "$KV_PREV" kubevirt-operator.yaml

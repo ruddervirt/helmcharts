@@ -1,0 +1,7 @@
+CDI v1.64.0 is installed in namespace {{ .Release.Namespace }}.
+
+Watch the operator roll out the components:
+  kubectl get cdi cdi -w
+
+"helm uninstall" keeps every resource of this chart, the CRDs, and all workloads.
+See the README of the chart repository for how to remove CDI.

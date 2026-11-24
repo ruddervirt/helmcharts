@@ -1,4 +1,5 @@
-// Command chartgen generates Helm charts from upstream KubeVirt and CDI releases.
+// Command chartgen generates Helm charts from upstream releases.
+// The projects are in internal/upstream.
 //
 // Usage:
 //
@@ -66,15 +67,21 @@ func generate(chartsDir string, p *upstream.Project, tag string, fix int) (strin
 	if err != nil {
 		return "", err
 	}
-	op, err := p.Fetch(tag, p.OperatorFile)
-	if err != nil {
-		return "", err
+	in := chartgen.Input{Project: p, Tag: tag, Fix: fix}
+	switch p.Shape {
+	case upstream.ShapeCRDs:
+		if in.Source, err = p.FetchSource(tag); err != nil {
+			return "", err
+		}
+	default:
+		if in.Operator, err = p.Fetch(tag, p.OperatorFile); err != nil {
+			return "", err
+		}
+		if in.CR, err = p.Fetch(tag, p.CRFile); err != nil {
+			return "", err
+		}
 	}
-	cr, err := p.Fetch(tag, p.CRFile)
-	if err != nil {
-		return "", err
-	}
-	files, err := chartgen.Generate(chartgen.Input{Project: p, Tag: tag, Fix: fix, Operator: op, CR: cr})
+	files, err := chartgen.Generate(in)
 	if err != nil {
 		return "", err
 	}
@@ -96,7 +103,7 @@ func generate(chartsDir string, p *upstream.Project, tag string, fix int) (strin
 
 func cmdGenerate(args []string) error {
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
-	project := fs.String("project", "", "kubevirt or cdi")
+	project := fs.String("project", "", "project name")
 	tag := fs.String("tag", "", "upstream release tag, for example v1.9.1")
 	fix := fs.Int("fix", 0, "chart fix number for the same upstream tag (version X.Y.Z+fix.N)")
 	chartsDir := fs.String("charts-dir", "charts", "output root")
@@ -169,7 +176,7 @@ func cmdRegenerate(args []string) error {
 
 func cmdTags(args []string) error {
 	fs := flag.NewFlagSet("tags", flag.ExitOnError)
-	project := fs.String("project", "", "kubevirt or cdi")
+	project := fs.String("project", "", "project name")
 	all := fs.Bool("all", false, "also list tags older than the minimum supported tag")
 	_ = fs.Parse(args)
 	p, err := upstream.Get(*project)
@@ -190,7 +197,7 @@ func cmdTags(args []string) error {
 
 func cmdPrevious(args []string) error {
 	fs := flag.NewFlagSet("previous", flag.ExitOnError)
-	project := fs.String("project", "", "kubevirt or cdi")
+	project := fs.String("project", "", "project name")
 	tag := fs.String("tag", "", "upstream tag")
 	_ = fs.Parse(args)
 	p, err := upstream.Get(*project)
@@ -217,6 +224,7 @@ func cmdPrevious(args []string) error {
 type missingTag struct {
 	Project string `json:"project"`
 	Tag     string `json:"tag"`
+	Repo    string `json:"repo"` // GitHub owner/name of the upstream project
 }
 
 func cmdMissing(args []string) error {
@@ -244,7 +252,7 @@ func cmdMissing(args []string) error {
 		}
 		for _, t := range tags {
 			if upstream.CompareTags(t, p.MinTag) >= 0 && !have[t] {
-				out = append(out, missingTag{Project: name, Tag: t})
+				out = append(out, missingTag{Project: name, Tag: t, Repo: p.Repo})
 			}
 		}
 	}
@@ -254,7 +262,7 @@ func cmdMissing(args []string) error {
 // cmdLatest prints the directory of the newest chart version of a project.
 func cmdLatest(args []string) error {
 	fs := flag.NewFlagSet("latest", flag.ExitOnError)
-	project := fs.String("project", "", "kubevirt or cdi")
+	project := fs.String("project", "", "project name")
 	chartsDir := fs.String("charts-dir", "charts", "chart root")
 	_ = fs.Parse(args)
 	charts, err := existingCharts(*chartsDir, *project)

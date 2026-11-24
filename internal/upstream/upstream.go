@@ -15,13 +15,40 @@ import (
 	"time"
 )
 
+// Shape is the kind of chart that the generator makes for a project.
+type Shape string
+
+const (
+	// ShapeOperator is an operator manifest (one Namespace, one static CRD, one
+	// Deployment, RBAC) plus a custom resource file, both release assets.
+	ShapeOperator Shape = "operator"
+	// ShapeCRDs is a set of CustomResourceDefinitions, picked by name from one
+	// repository file. All other documents in the file are dropped.
+	ShapeCRDs Shape = "crds"
+)
+
 // Project describes the layout of one upstream release that the generator expects.
 type Project struct {
-	// Name is the chart name and the values key of the custom resource.
+	// Name is the chart name. For ShapeOperator, it is also the values key of the custom resource.
 	Name        string
 	Description string
 	Home        string
 	Repo        string // GitHub owner/name
+	Shape       Shape
+	// MinTag is the oldest tag that the update workflow generates charts for.
+	MinTag string
+
+	// ShapeCRDs fields.
+
+	// SourceFile is a repository file path at the release tag, for example
+	// deployments/multus-daemonset.yml. It is downloaded from raw.githubusercontent.com.
+	SourceFile string
+	// CRDNames are the CRDs that the chart contains. A missing CRD, or a CRD in
+	// SourceFile that is not listed, stops the generator.
+	CRDNames []string
+
+	// ShapeOperator fields.
+
 	// OperatorFile and CRFile are release asset names.
 	OperatorFile string
 	CRFile       string
@@ -44,8 +71,6 @@ type Project struct {
 	// Required lists Kind/name of objects that must exist in the operator manifest.
 	// Helm adopts existing resources by name, so a rename must stop the generator.
 	Required []string
-	// MinTag is the oldest tag that the update workflow generates charts for.
-	MinTag string
 	// ObservedVersionField is the status field of the CR with the running version.
 	ObservedVersionField string
 	// DeferUninstallStrategy makes the chart leave out spec.uninstallStrategy while the
@@ -55,7 +80,7 @@ type Project struct {
 	DeferUninstallStrategy bool
 }
 
-// AllowedKinds are the kinds that may appear in an operator manifest.
+// AllowedKinds are the kinds that may appear in an operator manifest (ShapeOperator).
 // A new kind stops the generator, because it needs a review.
 var AllowedKinds = map[string]bool{
 	"Namespace":                true,
@@ -76,6 +101,7 @@ var Projects = map[string]*Project{
 		Description:    "KubeVirt operator and KubeVirt custom resource, generated from the upstream release manifests",
 		Home:           "https://kubevirt.io",
 		Repo:           "kubevirt/kubevirt",
+		Shape:          ShapeOperator,
 		OperatorFile:   "kubevirt-operator.yaml",
 		CRFile:         "kubevirt-cr.yaml",
 		Namespace:      "kubevirt",
@@ -108,6 +134,7 @@ var Projects = map[string]*Project{
 		Description:    "Containerized Data Importer operator and CDI custom resource, generated from the upstream release manifests",
 		Home:           "https://github.com/kubevirt/containerized-data-importer",
 		Repo:           "kubevirt/containerized-data-importer",
+		Shape:          ShapeOperator,
 		OperatorFile:   "cdi-operator.yaml",
 		CRFile:         "cdi-cr.yaml",
 		Namespace:      "cdi",
@@ -135,19 +162,31 @@ var Projects = map[string]*Project{
 		MinTag:               "v1.65.0",
 		ObservedVersionField: "observedVersion",
 	},
+	"multus-crds": {
+		Name:        "multus-crds",
+		Description: "NetworkAttachmentDefinition CRD of Multus CNI, generated from the upstream deployment manifest",
+		Home:        "https://github.com/k8snetworkplumbingwg/multus-cni",
+		Repo:        "k8snetworkplumbingwg/multus-cni",
+		Shape:       ShapeCRDs,
+		SourceFile:  "deployments/multus-daemonset.yml",
+		CRDNames:    []string{"network-attachment-definitions.k8s.cni.cncf.io"},
+		// rke2-multus v4.3.017 has appVersion 4.3.0 and v4.3.118 has 4.3.1.
+		// ruddervirt-setup supports both.
+		MinTag: "v4.3.0",
+	},
 }
 
 // Get returns the project with the given name.
 func Get(name string) (*Project, error) {
 	p, ok := Projects[name]
 	if !ok {
-		return nil, fmt.Errorf("unknown project %q (want kubevirt or cdi)", name)
+		return nil, fmt.Errorf("unknown project %q (want one of %s)", name, strings.Join(Names(), ", "))
 	}
 	return p, nil
 }
 
 // Names returns the project names in a fixed order.
-func Names() []string { return []string{"kubevirt", "cdi"} }
+func Names() []string { return []string{"kubevirt", "cdi", "multus-crds"} }
 
 var stableTag = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
 
@@ -231,15 +270,36 @@ func get(url string, auth bool) ([]byte, error) {
 
 // Fetch downloads one release asset. If CHARTGEN_CACHE is set, it caches files there.
 func (p *Project) Fetch(tag, file string) ([]byte, error) {
+	return p.fetch(tag, file, ReleaseAssetURL(p.Repo, tag, file))
+}
+
+// FetchSource downloads SourceFile at the tag (ShapeCRDs).
+func (p *Project) FetchSource(tag string) ([]byte, error) {
+	if p.SourceFile == "" {
+		return nil, fmt.Errorf("project %s has no SourceFile", p.Name)
+	}
+	return p.fetch(tag, "source/"+p.SourceFile, RepoFileURL(p.Repo, tag, p.SourceFile))
+}
+
+// ReleaseAssetURL is the download URL of a release asset.
+func ReleaseAssetURL(repo, tag, file string) string {
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repo, tag, file)
+}
+
+// RepoFileURL is the download URL of a repository file at a tag.
+func RepoFileURL(repo, tag, path string) string {
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", repo, tag, path)
+}
+
+func (p *Project) fetch(tag, cacheName, url string) ([]byte, error) {
 	cache := os.Getenv("CHARTGEN_CACHE")
 	var cached string
 	if cache != "" {
-		cached = filepath.Join(cache, p.Name, tag, file)
+		cached = filepath.Join(cache, p.Name, tag, filepath.FromSlash(cacheName))
 		if b, err := os.ReadFile(cached); err == nil {
 			return b, nil
 		}
 	}
-	url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", p.Repo, tag, file)
 	b, err := get(url, false)
 	if err != nil {
 		return nil, err
