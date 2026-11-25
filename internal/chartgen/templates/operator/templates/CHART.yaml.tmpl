@@ -22,6 +22,21 @@ changes. The upgrade rolls the components anyway, and sets the field at that tim
 {{- end }}
 {{- end }}
 [[- end ]]
+[[- if .FollowImageTag ]]
+{{- /*
+The operator uses spec.imageTag for every component except itself. If the live CR
+has spec.imageTag (for example from an earlier kubectl patch), and the values do not
+set imageTag, the chart sets it to .Values.image.tag, so that a chart upgrade moves
+all components. If the live CR has no spec.imageTag, the field does not render.
+helm template has no cluster access, so it never renders the field.
+*/}}
+{{- if not (hasKey $spec "imageTag") }}
+{{- $liveCR := lookup "[[ .CRAPIVersion ]]" "[[ .CRKind ]]" [[ if .CRNamespaced ]].Release.Namespace[[ else ]]""[[ end ]] "[[ .CRName ]]" }}
+{{- if and $liveCR (dig "spec" "imageTag" "" $liveCR) }}
+{{- $_ := set $spec "imageTag" .Values.image.tag }}
+{{- end }}
+{{- end }}
+[[- end ]]
 apiVersion: [[ .CRAPIVersion ]]
 kind: [[ .CRKind ]]
 metadata:

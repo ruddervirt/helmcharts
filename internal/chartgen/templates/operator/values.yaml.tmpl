@@ -28,6 +28,13 @@ image:
   # a running KubeVirt that has no uninstallStrategy, the chart sets the field only at
   # the next version change.
 [[- end ]]
+[[- if .FollowImageTag ]]
+  # The operator uses spec.imageTag for every component except itself. If the live
+  # custom resource has spec.imageTag, and spec here does not set imageTag, the chart
+  # sets spec.imageTag to image.tag. Thus a chart upgrade moves all components. If the
+  # live custom resource has no spec.imageTag, the chart does not render the field.
+  # To pin another tag, set spec.imageTag here.
+[[- end ]]
   spec:
 [[ .CRSpecYAML ]]
 

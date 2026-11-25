@@ -13,6 +13,7 @@ For the generator, the version scheme, the tests, and the workflows, see the [RE
 
 - [Chart layout](#chart-layout)
 - [Values](#values)
+  - [spec.imageTag for KubeVirt](#specimagetag-for-kubevirt)
 - [Custom resource fields and Helm merge behavior](#custom-resource-fields-and-helm-merge-behavior)
 - [Install with k3s](#install-with-k3s)
 - [Adopt an install that kubectl apply made](#adopt-an-install-that-kubectl-apply-made)
@@ -110,6 +111,20 @@ At the next upgrade to a new version, the chart renders the field. That upgrade 
 
 CDI does not hash the field. The CDI chart always renders it.
 
+### spec.imageTag for KubeVirt
+
+virt-operator uses `spec.imageTag` of the KubeVirt CR for every component except itself. Older ruddervirt-os releases set this field with `kubectl patch`. The charts `1.8.2`, `1.9.1`, and `1.10.0` do not render the field. On those clusters, a chart upgrade moves virt-operator, but virt-api, virt-controller, and virt-handler stay at the old version.
+
+The charts `1.9.1+fix.1`, `1.10.0+fix.1`, and all later KubeVirt charts use the Helm `lookup` function on the live KubeVirt CR. Two conditions must be true: the live CR has `spec.imageTag`, and `kubevirt.spec` in the values does not set `imageTag`. Then the chart renders `spec.imageTag` with the value of `image.tag`. Then a chart upgrade moves all components.
+
+If the live CR has no `spec.imageTag`, the chart does not render the field. `helm template` has no cluster access, so it never renders the field. To pin another tag, set `kubevirt.spec.imageTag`. The chart never renders `spec.imageRegistry`.
+
+Use a chart with this behavior to fix a cluster with a stale `spec.imageTag`. For example, a cluster on chart `1.10.0` with `imageTag: v1.8.2` needs an upgrade to `1.10.0+fix.1`.
+
+An upgrade from `1.9.1+fix.1` to the published `1.10.0` removes `spec.imageTag`. The old release manifest has the field and the new one does not, so the Helm three-way merge deletes it. Then KubeVirt runs every component at the operator version.
+
+`ChartsBeforeFollowImageTag` in `internal/upstream/upstream.go` lists the published charts `1.8.2`, `1.9.1`, and `1.10.0`, so that `chartgen regenerate` renders them exactly as published.
+
 The operator Deployment, its RBAC, and the PriorityClass have no values except the images and the version. They render exactly as upstream, so an adoption does not change the pod template.
 
 To remove a default field from the spec, set it to `null`:
@@ -203,7 +218,7 @@ Use this procedure on a cluster where ruddervirt-setup installed KubeVirt and CD
 
 The adoption changes no pod, because the rendered operator Deployment is the same as the upstream Deployment. The CDI CR gets `uninstallStrategy: BlockUninstallIfWorkloadsExist`. CDI does not restart components for that change. The KubeVirt CR gets the field at the next upgrade. See [Deferred uninstallStrategy for KubeVirt](#deferred-uninstallstrategy-for-kubevirt).
 
-The generation of the operator Deployments increments by one. Helm adds annotations, and if the annotations of a Deployment change, Kubernetes increments the generation. The pod template does not change.
+The generation of the operator Deployments increments by one. Helm adds annotations. If the annotations of a Deployment change, Kubernetes increments the generation. The pod template does not change.
 
 If you adopt with a newer chart version than the running version, the adoption is also an upgrade. The operator then rolls out the new version.
 

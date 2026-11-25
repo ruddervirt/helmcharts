@@ -225,3 +225,43 @@ func TestBadTag(t *testing.T) {
 		}
 	}
 }
+
+// TestFollowImageTag makes sure that only new kubevirt charts take over spec.imageTag.
+// The versions in upstream.ChartsBeforeFollowImageTag are published, so they must not
+// change.
+func TestFollowImageTag(t *testing.T) {
+	kv, _ := upstream.Get("kubevirt")
+	if cdi, _ := upstream.Get("cdi"); cdi.FollowImageTag {
+		t.Error("cdi has FollowImageTag, want only kubevirt")
+	}
+	const marker = `set $spec "imageTag" .Values.image.tag`
+	for _, c := range []struct {
+		name string
+		p    *upstream.Project
+		tag  string
+		fix  int
+		want bool
+	}{
+		{"published 1.8.2", kv, "v1.8.2", 0, false},
+		{"published 1.9.1", kv, "v1.9.1", 0, false},
+		{"published 1.10.0", kv, "v1.10.0", 0, false},
+		{"fix of 1.9.1", kv, "v1.9.1", 1, true},
+		{"new release", kv, "v1.11.0", 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			op := strings.ReplaceAll(fixture, tag, c.tag)
+			cr := strings.ReplaceAll(fixtureCR, tag, c.tag)
+			files, err := Generate(Input{Project: c.p, Tag: c.tag, Fix: c.fix, Operator: []byte(op), CR: []byte(cr)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tpl := string(files["templates/kubevirt.yaml"])
+			if got := strings.Contains(tpl, marker); got != c.want {
+				t.Errorf("imageTag block in templates/kubevirt.yaml = %v, want %v\n%s", got, c.want, tpl)
+			}
+			if got := strings.Contains(string(files["values.yaml"]), "spec.imageTag"); got != c.want {
+				t.Errorf("imageTag comment in values.yaml = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

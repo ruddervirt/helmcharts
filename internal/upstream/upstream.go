@@ -78,7 +78,18 @@ type Project struct {
 	// install strategy, so setting it rolls all components. The chart sets it at the
 	// next version change, which rolls the components anyway.
 	DeferUninstallStrategy bool
+	// FollowImageTag makes the chart take over spec.imageTag of the live CR. If the live
+	// CR has spec.imageTag and the values do not set it, the chart renders it with
+	// .Values.image.tag. Without this, a chart upgrade moves only the operator, because
+	// the operator uses spec.imageTag for every other component. Charts listed in
+	// ChartsBeforeFollowImageTag do not get the behavior.
+	FollowImageTag bool
 }
+
+// ChartsBeforeFollowImageTag are the chart versions that were published before
+// FollowImageTag existed. Published charts are never overwritten, so regenerate must
+// render these versions without the behavior.
+var ChartsBeforeFollowImageTag = []string{"1.8.2", "1.9.1", "1.10.0"}
 
 // AllowedKinds are the kinds that may appear in an operator manifest (ShapeOperator).
 // A new kind stops the generator, because it needs a review.
@@ -128,6 +139,7 @@ var Projects = map[string]*Project{
 		MinTag:                 "v1.9.1",
 		ObservedVersionField:   "observedKubeVirtVersion",
 		DeferUninstallStrategy: true,
+		FollowImageTag:         true,
 	},
 	"cdi": {
 		Name:           "cdi",
