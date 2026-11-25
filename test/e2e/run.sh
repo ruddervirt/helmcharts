@@ -9,6 +9,16 @@
 # 3. Upgrade with Helm to N+1 (the chart under test).
 # 4. Run "helm uninstall". Make sure that the CRD and the NetworkAttachmentDefinition stay.
 #
+# Kube-OVN CRDs:
+# 1. Create the upstream Kube-OVN CRDs of KUBEOVN_FROM with the field managers "helm"
+#    (crds/ of kube-ovn-v2) and "kubectl-client-side-apply". Create a Vpc and a
+#    VpcEgressGateway with an integer bandwidth.
+# 2. Adopt the CRDs with "helm install --take-ownership" at KUBEOVN_FROM. Make sure that
+#    no CRD spec changed and the custom resources still exist.
+# 3. Upgrade with Helm to the chart under test. Make sure that vpc-egress-gateways
+#    bandwidth is int-or-string and accepts a quantity such as 1Gi.
+# 4. Run "helm uninstall". Make sure that all 21 CRDs and the custom resources stay.
+#
 # KubeVirt and CDI:
 # 1. Install upstream KubeVirt and CDI at version N with "kubectl apply" (as ruddervirt-setup does).
 # 2. Patch feature gates into the KubeVirt CR (as Aileron does).
@@ -24,8 +34,9 @@
 # N is the stable upstream release before the chart under test.
 #
 # Environment:
-#   KUBEVIRT_CHART, CDI_CHART, MULTUS_CRDS_CHART
+#   KUBEVIRT_CHART, CDI_CHART, MULTUS_CRDS_CHART, KUBEOVN_CRDS_CHART
 #                              chart directories under test (default: newest in charts/)
+#   KUBEOVN_FROM               Kube-OVN tag of the CRDs before adoption (default: v1.15.19)
 #   KIND_CLUSTER               kind cluster name (default: chart-e2e)
 #   E2E_REUSE_CLUSTER=1        use an existing cluster with that name
 #   E2E_KEEP_CLUSTER=1         do not delete the cluster at the end
@@ -84,6 +95,11 @@ MULTUS_CRDS_CHART=${MULTUS_CRDS_CHART:-$("${CHARTGEN[@]}" latest --project multu
 MULTUS_TAG=$(appversion "$MULTUS_CRDS_CHART")
 MULTUS_PREV=$("${CHARTGEN[@]}" previous --project multus-crds --tag "$MULTUS_TAG")
 echo "Multus:   $MULTUS_PREV -> $MULTUS_TAG ($MULTUS_CRDS_CHART)"
+KUBEOVN_CRDS_CHART=${KUBEOVN_CRDS_CHART:-$("${CHARTGEN[@]}" latest --project kube-ovn-crds)}
+KUBEOVN_TAG=$(appversion "$KUBEOVN_CRDS_CHART")
+# v1.15.19 has an integer bandwidth in vpc-egress-gateways. Later versions have int-or-string.
+KUBEOVN_FROM=${KUBEOVN_FROM:-v1.15.19}
+echo "Kube-OVN: $KUBEOVN_FROM -> $KUBEOVN_TAG ($KUBEOVN_CRDS_CHART)"
 
 # Use the same Helm flags as k3s helm-controller with takeOwnership: true. It passes
 # --take-ownership to install and upgrade. With Helm v4, it also passes
@@ -100,6 +116,7 @@ log "Generate the charts for N"
 KV_PREV_CHART=$("${CHARTGEN[@]}" generate --project kubevirt --tag "$KV_PREV" --charts-dir "$WORK/charts")
 CDI_PREV_CHART=$("${CHARTGEN[@]}" generate --project cdi --tag "$CDI_PREV" --charts-dir "$WORK/charts")
 MULTUS_PREV_CHART=$("${CHARTGEN[@]}" generate --project multus-crds --tag "$MULTUS_PREV" --charts-dir "$WORK/charts")
+KUBEOVN_FROM_CHART=$("${CHARTGEN[@]}" generate --project kube-ovn-crds --tag "$KUBEOVN_FROM" --charts-dir "$WORK/charts")
 
 if [[ "${E2E_REUSE_CLUSTER:-}" != 1 ]]; then
   log "Create kind cluster $CLUSTER"
@@ -173,6 +190,104 @@ crd_state >"$WORK/multus-after-uninstall"
 diff -u "$WORK/multus-after-upgrade" "$WORK/multus-after-uninstall" \
   || fail "helm uninstall changed the CRD or the NetworkAttachmentDefinition"
 echo "helm uninstall left the CRD and the NetworkAttachmentDefinition in place"
+
+log "Kube-OVN CRDs: create the upstream CRDs of $KUBEOVN_FROM as Helm (crds/) and kubectl apply do"
+curl -fsSL -o "$WORK/kube-ovn-crd.yaml" \
+  "https://raw.githubusercontent.com/kubeovn/kube-ovn/$KUBEOVN_FROM/charts/kube-ovn-v2/crds/kube-ovn-crd.yaml"
+mapfile -t KUBEOVN_CRDS < <(cd "$KUBEOVN_FROM_CHART/templates" && ls -- *.kubeovn.io.yaml | sed 's/\.yaml$//')
+[[ ${#KUBEOVN_CRDS[@]} == 21 ]] || fail "expected 21 Kube-OVN CRDs, found ${#KUBEOVN_CRDS[@]}"
+# Helm creates the files of crds/ with field manager "helm". ruddervirt-setup later
+# ran "kubectl apply", which adds the manager "kubectl-client-side-apply".
+$KUBECTL create --field-manager=helm -f "$WORK/kube-ovn-crd.yaml" >/dev/null
+$KUBECTL apply -f "$WORK/kube-ovn-crd.yaml" 2>&1 | grep -v 'missing the kubectl.kubernetes.io/last-applied-configuration' || true
+for c in "${KUBEOVN_CRDS[@]}"; do
+  $KUBECTL wait --for=condition=Established "crd/$c" --timeout=120s >/dev/null
+  managers=$($KUBECTL get crd "$c" -o jsonpath='{.metadata.managedFields[*].manager}')
+  [[ " $managers " == *" helm "* && " $managers " == *" kubectl-client-side-apply "* ]] \
+    || fail "CRD $c has managers \"$managers\", want helm and kubectl-client-side-apply"
+done
+# Custom resources that must survive adoption, upgrade, and uninstall.
+cat <<'KOVN' | $KUBECTL apply -f -
+apiVersion: kubeovn.io/v1
+kind: Vpc
+metadata:
+  name: e2e
+---
+apiVersion: kubeovn.io/v1
+kind: VpcEgressGateway
+metadata:
+  name: e2e
+  namespace: default
+spec:
+  externalSubnet: e2e-external
+  policies:
+    - ipBlocks: ["10.0.0.0/8"]
+  bandwidth:
+    ingress: 100
+KOVN
+# A VpcEgressGateway with a quantity as bandwidth. Only int-or-string accepts it.
+cat >"$WORK/veg-quantity.yaml" <<'KOVN'
+apiVersion: kubeovn.io/v1
+kind: VpcEgressGateway
+metadata:
+  name: e2e-quantity
+  namespace: default
+spec:
+  externalSubnet: e2e-external
+  policies:
+    - ipBlocks: ["10.0.0.0/8"]
+  bandwidth:
+    ingress: 1Gi
+KOVN
+$KUBECTL create --dry-run=server -f "$WORK/veg-quantity.yaml" >/dev/null 2>&1 \
+  && fail "the $KUBEOVN_FROM CRD accepts a quantity as bandwidth; the test needs a version with an integer"
+
+# kubeovn_state prints the identity, generation, and spec of each CRD, and the identity
+# of the custom resources. A CRD spec change increments the generation.
+kubeovn_state() {
+  for c in "${KUBEOVN_CRDS[@]}"; do
+    printf '%s %s spec sha256=%s\n' "$c" \
+      "$($KUBECTL get crd "$c" -o jsonpath='uid={.metadata.uid} generation={.metadata.generation}')" \
+      "$($KUBECTL get crd "$c" -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
+  done
+  $KUBECTL get vpcs.kubeovn.io e2e -o jsonpath='vpc uid={.metadata.uid}{"\n"}'
+  $KUBECTL -n default get vpc-egress-gateways.kubeovn.io e2e -o jsonpath='veg uid={.metadata.uid} bandwidth={.spec.bandwidth}{"\n"}'
+}
+kubeovn_state >"$WORK/kubeovn-before"
+
+log "Kube-OVN CRDs: adopt with helm install --take-ownership at $KUBEOVN_FROM"
+$HELM install kube-ovn-crds "$KUBEOVN_FROM_CHART" -n kube-system "${HELM_FLAGS[@]}" --wait --timeout 5m
+kubeovn_state >"$WORK/kubeovn-after-adopt"
+diff -u "$WORK/kubeovn-before" "$WORK/kubeovn-after-adopt" || fail "adoption changed a Kube-OVN CRD or custom resource"
+for c in "${KUBEOVN_CRDS[@]}"; do
+  [[ $($KUBECTL get crd "$c" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by} {.metadata.annotations.helm\.sh/resource-policy}') == "Helm keep" ]] \
+    || fail "CRD $c is not managed by Helm or has no keep annotation"
+done
+echo "adoption changed no CRD spec and no custom resource"
+
+log "Kube-OVN CRDs: upgrade with Helm to $KUBEOVN_TAG"
+$HELM upgrade kube-ovn-crds "$KUBEOVN_CRDS_CHART" -n kube-system "${HELM_FLAGS[@]}" --wait --timeout 5m
+kubeovn_state >"$WORK/kubeovn-after-upgrade"
+# The CRDs of the new version can differ, so compare only the identities.
+diff -u <(sed 's/ generation=.*//' "$WORK/kubeovn-before") <(sed 's/ generation=.*//' "$WORK/kubeovn-after-upgrade") \
+  || fail "the upgrade replaced a Kube-OVN CRD or custom resource"
+ingress=$($KUBECTL get crd vpc-egress-gateways.kubeovn.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.bandwidth.properties.ingress}')
+[[ $(jq -r '."x-kubernetes-int-or-string"' <<<"$ingress") == true && $(jq -r '.type' <<<"$ingress") == null ]] \
+  || fail "vpc-egress-gateways bandwidth.ingress is not int-or-string after the upgrade: $ingress"
+$KUBECTL create --dry-run=server -f "$WORK/veg-quantity.yaml" >/dev/null \
+  || fail "the $KUBEOVN_TAG CRD does not accept a quantity as bandwidth"
+[[ $($HELM get manifest kube-ovn-crds -n kube-system | grep -c '^kind: CustomResourceDefinition') == 21 ]] \
+  || fail "release kube-ovn-crds does not contain the 21 CRDs"
+echo "vpc-egress-gateways bandwidth is int-or-string, and the existing custom resources stayed"
+
+log "Kube-OVN CRDs: helm uninstall"
+$HELM uninstall kube-ovn-crds -n kube-system --wait
+sleep 5
+kubeovn_state >"$WORK/kubeovn-after-uninstall"
+diff -u "$WORK/kubeovn-after-upgrade" "$WORK/kubeovn-after-uninstall" \
+  || fail "helm uninstall changed a Kube-OVN CRD or custom resource"
+echo "helm uninstall left all 21 CRDs and the custom resources in place"
 
 log "Install upstream KubeVirt $KV_PREV and CDI $CDI_PREV with kubectl apply"
 download kubevirt/kubevirt "$KV_PREV" kubevirt-operator.yaml

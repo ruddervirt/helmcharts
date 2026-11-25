@@ -1,0 +1,22 @@
+# k3s HelmChart for the Kube-OVN CRDs.
+# helm-controller installs the chart as release "kube-ovn-crds" in namespace "kube-system".
+# The CRDs are cluster scoped, so the release namespace has no effect on them.
+# With takeOwnership: true, Helm adopts the CRDs that the kube-ovn-v2 chart (crds/) or
+# "kubectl apply" made. Install or upgrade this chart before kube-ovn-v2, so that the
+# CRDs are at the new version before kube-ovn starts.
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: kube-ovn-crds
+  namespace: kube-system
+spec:
+  chart: oci://ghcr.io/ruddervirt/charts/kube-ovn-crds
+  # Use the version of the kube-ovn-v2 chart.
+  version: 1.15.35
+  targetNamespace: kube-system
+  # Do not set forceConflicts. takeOwnership makes helm-controller pass
+  # --server-side=false, and Helm v4 fails when it also gets --force-conflicts.
+  # Client-side apply ignores field managers, so no conflict is possible.
+  # See docs/kube-ovn-crds.md.
+  takeOwnership: true
+  failurePolicy: abort

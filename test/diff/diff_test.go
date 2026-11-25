@@ -336,6 +336,7 @@ func TestExamples(t *testing.T) {
 					TargetNamespace string `json:"targetNamespace"`
 					CreateNamespace bool   `json:"createNamespace"`
 					TakeOwnership   bool   `json:"takeOwnership"`
+					ForceConflicts  bool   `json:"forceConflicts"`
 					FailurePolicy   string `json:"failurePolicy"`
 					ValuesContent   string `json:"valuesContent"`
 				} `json:"spec"`
@@ -352,6 +353,12 @@ func TestExamples(t *testing.T) {
 			}
 			if !hc.Spec.TakeOwnership || hc.Spec.FailurePolicy != "abort" {
 				t.Errorf("takeOwnership = %v, failurePolicy = %q", hc.Spec.TakeOwnership, hc.Spec.FailurePolicy)
+			}
+			// takeOwnership makes helm-controller pass --server-side=false. klipper-helm
+			// still passes --force-conflicts=true, and Helm v4 then fails with
+			// "forceConflicts enabled when serverSideApply disabled".
+			if hc.Spec.TakeOwnership && hc.Spec.ForceConflicts {
+				t.Errorf("forceConflicts with takeOwnership fails on Helm v4")
 			}
 			dir := filepath.Join(root, "charts", name, hc.Spec.Version)
 			if _, err := os.Stat(filepath.Join(dir, "Chart.yaml")); err != nil {

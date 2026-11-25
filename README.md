@@ -11,6 +11,7 @@ A generator (`cmd/chartgen`) writes every file under `charts/`. Do not edit thos
 | `kubevirt` | [kubevirt/kubevirt](https://github.com/kubevirt/kubevirt) | `oci://ghcr.io/ruddervirt/charts/kubevirt` | [docs/kubevirt-cdi.md](docs/kubevirt-cdi.md) |
 | `cdi` | [kubevirt/containerized-data-importer](https://github.com/kubevirt/containerized-data-importer) | `oci://ghcr.io/ruddervirt/charts/cdi` | [docs/kubevirt-cdi.md](docs/kubevirt-cdi.md) |
 | `multus-crds` | [k8snetworkplumbingwg/multus-cni](https://github.com/k8snetworkplumbingwg/multus-cni) | `oci://ghcr.io/ruddervirt/charts/multus-crds` | [docs/multus-crds.md](docs/multus-crds.md) |
+| `kube-ovn-crds` | [kubeovn/kube-ovn](https://github.com/kubeovn/kube-ovn) | `oci://ghcr.io/ruddervirt/charts/kube-ovn-crds` | [docs/kube-ovn-crds.md](docs/kube-ovn-crds.md) |
 
 The documentation of each chart covers its values, install, adoption, upgrade, and uninstall behavior.
 
@@ -112,7 +113,7 @@ The generator supports two project shapes. The `Shape` field of a project in `in
 | Shape | Upstream source | Chart content | Examples |
 | --- | --- | --- | --- |
 | `ShapeOperator` | An operator manifest and a custom resource file, both release assets. The manifest has one Namespace, one static CRD, and one operator Deployment. | The operator resources, the custom resource, the static CRD in `crds/`, and the namespace and CRD hooks. | `kubevirt`, `cdi` |
-| `ShapeCRDs` | One repository file at the release tag. | Only the CRDs that the project lists, in `templates/`. All other documents of the file are dropped. | `multus-crds` |
+| `ShapeCRDs` | One repository file at the release tag. | Only the CRDs that the project lists, in `templates/`. All other documents of the file are dropped. | `multus-crds`, `kube-ovn-crds` |
 
 A project with a different shape needs a change to `internal/chartgen` first.
 

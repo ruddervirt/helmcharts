@@ -186,6 +186,40 @@ var Projects = map[string]*Project{
 		// ruddervirt-setup supports both.
 		MinTag: "v4.3.0",
 	},
+	"kube-ovn-crds": {
+		Name:        "kube-ovn-crds",
+		Description: "CRDs of Kube-OVN, generated from the crds/ directory of the upstream kube-ovn-v2 chart",
+		Home:        "https://github.com/kubeovn/kube-ovn",
+		Repo:        "kubeovn/kube-ovn",
+		Shape:       ShapeCRDs,
+		// The kube-ovn-v2 chart has its CRDs in crds/, and Helm never upgrades crds/.
+		// This chart has the same CRDs in templates/, so that they upgrade.
+		SourceFile: "charts/kube-ovn-v2/crds/kube-ovn-crd.yaml",
+		CRDNames: []string{
+			"vpc-dnses.kubeovn.io",
+			"switch-lb-rules.kubeovn.io",
+			"vpc-nat-gateways.kubeovn.io",
+			"vpc-egress-gateways.kubeovn.io",
+			"iptables-eips.kubeovn.io",
+			"iptables-fip-rules.kubeovn.io",
+			"iptables-dnat-rules.kubeovn.io",
+			"iptables-snat-rules.kubeovn.io",
+			"ovn-eips.kubeovn.io",
+			"ovn-fips.kubeovn.io",
+			"ovn-snat-rules.kubeovn.io",
+			"ovn-dnat-rules.kubeovn.io",
+			"vpcs.kubeovn.io",
+			"ips.kubeovn.io",
+			"vips.kubeovn.io",
+			"subnets.kubeovn.io",
+			"ippools.kubeovn.io",
+			"vlans.kubeovn.io",
+			"provider-networks.kubeovn.io",
+			"security-groups.kubeovn.io",
+			"qos-policies.kubeovn.io",
+		},
+		MinTag: "v1.15.19",
+	},
 }
 
 // Get returns the project with the given name.
@@ -198,7 +232,7 @@ func Get(name string) (*Project, error) {
 }
 
 // Names returns the project names in a fixed order.
-func Names() []string { return []string{"kubevirt", "cdi", "multus-crds"} }
+func Names() []string { return []string{"kubevirt", "cdi", "multus-crds", "kube-ovn-crds"} }
 
 var stableTag = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)$`)
 
