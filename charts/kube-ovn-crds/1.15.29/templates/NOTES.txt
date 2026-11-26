@@ -1,0 +1,25 @@
+kube-ovn-crds v1.15.29 manages these CustomResourceDefinitions:
+  - vpc-dnses.kubeovn.io
+  - switch-lb-rules.kubeovn.io
+  - vpc-nat-gateways.kubeovn.io
+  - vpc-egress-gateways.kubeovn.io
+  - iptables-eips.kubeovn.io
+  - iptables-fip-rules.kubeovn.io
+  - iptables-dnat-rules.kubeovn.io
+  - iptables-snat-rules.kubeovn.io
+  - ovn-eips.kubeovn.io
+  - ovn-fips.kubeovn.io
+  - ovn-snat-rules.kubeovn.io
+  - ovn-dnat-rules.kubeovn.io
+  - vpcs.kubeovn.io
+  - ips.kubeovn.io
+  - vips.kubeovn.io
+  - subnets.kubeovn.io
+  - ippools.kubeovn.io
+  - vlans.kubeovn.io
+  - provider-networks.kubeovn.io
+  - security-groups.kubeovn.io
+  - qos-policies.kubeovn.io
+
+"helm uninstall" keeps the CRDs. Deleting a CRD deletes every custom resource of
+that kind in the cluster, so remove the CRDs only by hand.
